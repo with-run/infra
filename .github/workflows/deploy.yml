@@ -1,0 +1,107 @@
+name: production-deploy
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "deploy/**"
+      - ".github/workflows/deploy.yml"
+  repository_dispatch:
+    types:
+      - deploy-web
+      - deploy-was
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "infra | web | was | all"
+        required: true
+        default: "infra"
+        type: choice
+        options:
+          - infra
+          - web
+          - was
+          - all
+      web_image:
+        description: "예: YOUR_DOCKERHUB_USERNAME/withrun-web:latest"
+        required: false
+        type: string
+      was_image:
+        description: "예: YOUR_DOCKERHUB_USERNAME/withrun-was:latest"
+        required: false
+        type: string
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve deploy parameters
+        id: params
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_SERVICE: ${{ github.event.client_payload.service }}
+          DISPATCH_IMAGE: ${{ github.event.client_payload.image }}
+          INPUT_MODE: ${{ inputs.mode }}
+          INPUT_WEB_IMAGE: ${{ inputs.web_image }}
+          INPUT_WAS_IMAGE: ${{ inputs.was_image }}
+        run: |
+          if [[ "$EVENT_NAME" == "repository_dispatch" ]]; then
+            echo "mode=$DISPATCH_SERVICE" >> "$GITHUB_OUTPUT"
+            if [[ "$DISPATCH_SERVICE" == "web" ]]; then
+              echo "web_image=$DISPATCH_IMAGE" >> "$GITHUB_OUTPUT"
+              echo "was_image=" >> "$GITHUB_OUTPUT"
+            elif [[ "$DISPATCH_SERVICE" == "was" ]]; then
+              echo "web_image=" >> "$GITHUB_OUTPUT"
+              echo "was_image=$DISPATCH_IMAGE" >> "$GITHUB_OUTPUT"
+            else
+              echo "unsupported repository_dispatch service: $DISPATCH_SERVICE"
+              exit 1
+            fi
+          elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            echo "mode=$INPUT_MODE" >> "$GITHUB_OUTPUT"
+            echo "web_image=$INPUT_WEB_IMAGE" >> "$GITHUB_OUTPUT"
+            echo "was_image=$INPUT_WAS_IMAGE" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=infra" >> "$GITHUB_OUTPUT"
+            echo "web_image=" >> "$GITHUB_OUTPUT"
+            echo "was_image=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Copy deploy files to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.PROD_HOST }}
+          username: ${{ secrets.PROD_USER }}
+          key: ${{ secrets.PROD_SSH_KEY }}
+          port: ${{ secrets.PROD_PORT }}
+          source: "deploy"
+          target: "/opt/withrun"
+
+      - name: Run deploy script on server
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          MODE: ${{ steps.params.outputs.mode }}
+          WEB_IMAGE: ${{ steps.params.outputs.web_image }}
+          WAS_IMAGE: ${{ steps.params.outputs.was_image }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        with:
+          host: ${{ secrets.PROD_HOST }}
+          username: ${{ secrets.PROD_USER }}
+          key: ${{ secrets.PROD_SSH_KEY }}
+          port: ${{ secrets.PROD_PORT }}
+          script_stop: true
+          envs: MODE,WEB_IMAGE,WAS_IMAGE,DOCKERHUB_USERNAME,DOCKERHUB_TOKEN
+          script: |
+            chmod +x /opt/withrun/deploy/scripts/deploy.sh
+            /opt/withrun/deploy/scripts/deploy.sh "$MODE" "$WEB_IMAGE" "$WAS_IMAGE"
