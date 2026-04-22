@@ -2,7 +2,7 @@
 set -euo pipefail
 
 APP_HOME="/opt/withrun"
-COMPOSE_FILE="$APP_HOME/deploy/compose/docker-compose.prod.yml"
+COMPOSE_FILE="$APP_HOME/deploy/compose/docker-compose.yml"
 IMAGE_ENV="$APP_HOME/run/images.env"
 
 MODE="${1:-infra}"
